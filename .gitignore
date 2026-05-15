@@ -1,0 +1,28 @@
+# Snap7 library (cloned external dependency)
+debug_utils/snap7_lib/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+
+# Testing
+.pytest_cache/
+.mypy_cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Socket files
+/tmp/gpio*.sock

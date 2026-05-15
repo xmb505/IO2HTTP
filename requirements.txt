@@ -1,0 +1,3 @@
+python-snap7
+pyserial
+websocket-client

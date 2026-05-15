@@ -79,8 +79,10 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
         controller = self.daemon.controllers[alias]
         controller_config = self.daemon.controller_configs[alias]
 
-        if mode == 'set':
+        if mode == 'set' or mode == 'seter':
             return self._handle_set(command, controller, alias)
+        elif mode == 'geter':
+            return self._handle_get(command, controller, alias)
         elif mode == 'spi':
             return self._handle_spi(command, controller, controller_config, alias)
         elif mode == 'spi_multi':
@@ -100,6 +102,16 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
             controller.set_gpio(gpio_states)
             return {'success': True, 'alias': alias, 'gpios': command['gpios'], 'values': command['values']}
         return {'error': 'Missing gpio/value or gpios/values'}
+
+    def _handle_get(self, command, controller, alias):
+        """处理geter命令（读取GPIO状态）"""
+        if 'gpio' in command:
+            result = controller.read_gpio(command['gpio'])
+            if result is not None:
+                return {'success': True, 'alias': alias, 'gpio': command['gpio'], 'value': result}
+            else:
+                return {'error': f'Failed to read {command["gpio"]}'}
+        return {'error': 'Missing gpio parameter'}
 
     def _handle_spi(self, command, controller, controller_config, alias):
         """处理SPI命令"""

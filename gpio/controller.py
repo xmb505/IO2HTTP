@@ -8,19 +8,19 @@ import serial
 import time
 import threading
 
+from .base_controller import GPIOControllerBase
 
-class USBGPIOController:
-    """USB GPIO 控制器类"""
+
+class USBGPIOController(GPIOControllerBase):
+    """USB GPIO 控制器，通过串口与 USB2GPIO 设备通信"""
 
     def __init__(self, tty_path, baudrate=115200, simulate=False, debug=False):
+        config = {'tty_path': tty_path, 'baudrate': baudrate}
+        super().__init__(config, simulate=simulate, debug=debug)
+
         self.tty_path = tty_path
         self.baudrate = baudrate
         self.ser = None
-        self.simulate = simulate
-        self.debug = debug
-        self.gpio_states = {}  # 用于模拟模式下的GPIO状态
-        self.current_gpio_states = {}  # 当前各GPIO引脚的状态
-        self.data_buffer = ""  # 数据缓冲区，用于累积流式数据避免截断
         self._lock = threading.Lock()  # 串口操作锁，防止并发竞争
 
         if not simulate:
@@ -201,3 +201,12 @@ class USBGPIOController:
         if debug_spi:
             end_time = time.time()
             print(f"[SPI调试] SPI传输完成，总耗时: {end_time - start_time:.6f}s")
+
+    def close(self):
+        """关闭串口连接"""
+        if self.ser and self.ser.is_open:
+            try:
+                self.ser.close()
+                print(f"已关闭设备 {self.tty_path}")
+            except Exception as e:
+                print(f"关闭设备 {self.tty_path} 失败: {e}")

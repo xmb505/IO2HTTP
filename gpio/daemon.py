@@ -73,20 +73,31 @@ class GPIOControlDaemon:
         print(f"GPIO守护进程初始化完成 (模拟模式: {simulate}, 调试SPI: {debug_spi})")
 
     def _init_controllers(self):
-        """初始化USB GPIO控制器"""
-        from .controller import USBGPIOController
+        """初始化 GPIO 控制器"""
+        from configparser import SectionProxy
 
         for section_name in self.config.sections():
             if section_name == 'daemon_config':
                 continue
 
-            tty_path = self.config.get(section_name, 'tty_path')
-            baudrate = self.config.getint(section_name, 'baudrate', fallback=115200)
+            protocol = self.config.get(section_name, 'protocol', fallback='usb2gpio')
             alias = self.config.get(section_name, 'alias')
-            mode = self.config.get(section_name, 'mode')
+            # S7 协议是双工设备，无需 mode
+            mode = self.config.get(section_name, 'mode', fallback=None)
+
+            # S7 协议不需要 tty_path，使用 IP 地址
+            if protocol == 's7':
+                tty_path = None
+                baudrate = 115200
+                section_config = self.config[section_name]
+            else:
+                tty_path = self.config.get(section_name, 'tty_path')
+                baudrate = self.config.getint(section_name, 'baudrate', fallback=115200)
+                section_config = self.config[section_name]
 
             controller_config = {
                 'mode': mode,
+                'protocol': protocol,
                 'config': dict(self.config.items(section_name))
             }
 
@@ -105,20 +116,26 @@ class GPIOControlDaemon:
 
             # /dev/null 表示暂不可用
             if tty_path == '/dev/null':
-                print(f"设备 {alias} 配置为 /dev/null，跳过初始化")
+                print(f"设备 {alias} (协议: {protocol}) 配置为 /dev/null，跳过初始化")
                 self.controller_configs[alias] = controller_config
                 continue
 
             try:
-                controller = USBGPIOController(tty_path, baudrate, simulate=self.simulate)
+                controller = self._create_controller(
+                    protocol, tty_path, baudrate,
+                    config=section_config if protocol == 's7' else None
+                )
                 self.controllers[alias] = controller
                 self.controller_configs[alias] = controller_config
             except Exception as e:
                 if not self.simulate:
-                    print(f"初始化控制器 {alias} 失败: {e}")
+                    print(f"初始化控制器 {alias} (协议: {protocol}) 失败: {e}")
                     print("尝试使用模拟模式...")
                     try:
-                        controller = USBGPIOController(tty_path, baudrate, simulate=True)
+                        controller = self._create_controller(
+                            protocol, tty_path, baudrate, simulate=True,
+                            config=section_config if protocol == 's7' else None
+                        )
                         self.controllers[alias] = controller
                         self.controller_configs[alias] = controller_config
                     except Exception as e2:
@@ -127,6 +144,37 @@ class GPIOControlDaemon:
                 else:
                     print(f"初始化控制器 {alias} 失败: {e}")
                     self.controller_configs[alias] = controller_config
+
+    def _create_controller(self, protocol, tty_path, baudrate, simulate=None, config=None):
+        """
+        根据协议类型创建对应的控制器
+
+        Args:
+            protocol: 协议名称 (usb2gpio, s7, ...)
+            tty_path: 设备路径
+            baudrate: 波特率
+            simulate: 是否模拟模式，None 表示使用 self.simulate
+            config: 额外配置参数（S7 协议需要）
+        """
+        if simulate is None:
+            simulate = self.simulate
+
+        if protocol == 'usb2gpio':
+            from .controller import USBGPIOController
+            return USBGPIOController(tty_path, baudrate, simulate=simulate)
+        elif protocol == 's7':
+            from .s7plc_controller import S7PLCController
+            if config is None:
+                config = {}
+            return S7PLCController(
+                ip_address=config.get('ip_address', '127.0.0.1'),
+                port=config.getint('port', 102),
+                rack=config.getint('rack', 0),
+                slot=config.getint('slot', 1),
+                simulate=simulate,
+            )
+        else:
+            raise ValueError(f"不支持的通信协议: {protocol}")
 
     def _init_sockets(self):
         """初始化Unix Socket"""
@@ -173,8 +221,10 @@ class GPIOControlDaemon:
             controller = self.controllers[alias]
             controller_config = self.controller_configs[alias]
 
-            if mode == 'set':
+            if mode == 'set' or mode == 'seter':
                 self._handle_set_command(command, controller)
+            elif mode == 'geter':
+                self._handle_get_command(command, controller)
             elif mode in ('spi', 'spi_multi') and controller_config['mode'] == 'spi':
                 self._handle_spi_command(command, controller)
 
@@ -195,6 +245,17 @@ class GPIOControlDaemon:
                 return
             gpio_states = dict(zip(gpios, values))
             controller.set_gpio(gpio_states)
+
+    def _handle_get_command(self, command, controller):
+        """处理geter命令（读取GPIO状态）"""
+        if 'gpio' in command:
+            result = controller.read_gpio(command['gpio'])
+            if result is not None:
+                print(f"读取 {command['gpio']} = {result}")
+            else:
+                print(f"读取 {command['gpio']} 失败")
+        else:
+            print("错误: geter命令需要 gpio 参数")
 
     def _handle_spi_command(self, command, controller):
         """处理SPI命令"""
@@ -734,8 +795,7 @@ class GPIOControlDaemon:
 
         for controller in self.controllers.values():
             try:
-                if controller.ser and controller.ser.is_open:
-                    controller.ser.close()
+                controller.close()
             except:
                 pass
 
