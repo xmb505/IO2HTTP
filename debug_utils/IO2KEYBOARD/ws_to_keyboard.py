@@ -99,18 +99,24 @@ def ws_connect(host, port, path='/'):
     return sock
 
 
+# WebSocket 超时 sentinel，区分 "没收到数据" 和 "连接断开"
+_TIMEOUT_SENTINEL = object()
+
+
 def recv_ws_frame(sock):
     """
     读取一个完整的 WebSocket 帧，返回解码后的字符串。
     服务器 → 客户端的帧不需要mask，所以直接读取payload。
 
     Returns:
-        str | None: 文本帧内容；连接关闭/出错返回 None
+        str | None | object: 文本帧 / 连接断开 None / 超时 _TIMEOUT_SENTINEL
     """
     # --- 读前 2 字节 ---
     header = _read_exact(sock, 2)
     if header is None:
         return None
+    if header is _TIMEOUT_SENTINEL:
+        return _TIMEOUT_SENTINEL
 
     fin_and_opcode = header[0]
     mask_and_len = header[1]
@@ -120,27 +126,31 @@ def recv_ws_frame(sock):
     # 处理控制帧
     if opcode == 0x8:   # Close
         return None
-    if opcode == 0x9:   # Ping → 回复 Pong
+    if opcode == 0x9:   # Ping → 回复 Pong (RFC 6455 §5.5.2)
         payload_len = mask_and_len & 0x7F
         if mask_and_len & 0x80:
             mask_key = _read_exact(sock, 4)
+            if mask_key is None or mask_key is _TIMEOUT_SENTINEL:
+                return None
         else:
             mask_key = None
         ping_data = _read_exact(sock, payload_len)
+        if ping_data is None or ping_data is _TIMEOUT_SENTINEL:
+            return None
         if mask_key:
             ping_data = _apply_mask(ping_data, mask_key)
-        # 简单回复 pong
-        pong_frame = bytes([0x8A, payload_len]) + (
-            _apply_mask(ping_data, mask_key) if mask_key else ping_data
-        )
-        # 修正：pong 的 payload 应该是原始的 application data
-        # 但这里就直接用解析后的 data 了，实际应该原样回
-        return None
+        # 回复 Pong（服务器→客户端帧不需要 mask）
+        pong_frame = bytes([0x8A, payload_len]) + ping_data
+        try:
+            sock.sendall(pong_frame)
+        except Exception:
+            return None
+        return _TIMEOUT_SENTINEL
     if opcode == 0xA:   # Pong
-        return None
+        return _TIMEOUT_SENTINEL
 
     if opcode not in (0x1, 0x2):  # 只处理 text/binary
-        return None
+        return _TIMEOUT_SENTINEL
 
     # --- 解析长度 ---
     payload_len = mask_and_len & 0x7F
@@ -148,17 +158,23 @@ def recv_ws_frame(sock):
         ext = _read_exact(sock, 2)
         if ext is None:
             return None
+        if ext is _TIMEOUT_SENTINEL:
+            return _TIMEOUT_SENTINEL
         payload_len = int.from_bytes(ext, 'big')
     elif payload_len == 127:
         ext = _read_exact(sock, 8)
         if ext is None:
             return None
+        if ext is _TIMEOUT_SENTINEL:
+            return _TIMEOUT_SENTINEL
         payload_len = int.from_bytes(ext, 'big')
 
     # --- 读 payload (服务器帧不应mask) ---
     payload = _read_exact(sock, payload_len)
     if payload is None:
         return None
+    if payload is _TIMEOUT_SENTINEL:
+        return _TIMEOUT_SENTINEL
 
     return payload.decode('utf-8')
 
@@ -170,9 +186,9 @@ def _read_exact(sock, n):
         try:
             chunk = sock.recv(n - len(data))
         except socket.timeout:
-            return None
+            return _TIMEOUT_SENTINEL    # 区分超时和真正断开
         if not chunk:
-            return None
+            return None                 # 连接真正断开
         data += chunk
     return data
 
@@ -210,11 +226,15 @@ class KeyMapper:
         self._print_mapping()
 
     def _key_name(self, code):
-        """keycode → 可读名称"""
+        """keycode → 可读名称（优先返回 KEY_ / BTN_ 前缀名称）"""
+        fallback = None
         for name, val in ecodes.ecodes.items():
             if val == code:
-                return name
-        return f"0x{code:X}"
+                if name.startswith('KEY_') or name.startswith('BTN_'):
+                    return name
+                if fallback is None:
+                    fallback = name
+        return fallback if fallback else f"0x{code:X}"
 
     def _print_mapping(self):
         """输出映射表"""
@@ -351,10 +371,12 @@ def main():
             while running:
                 try:
                     frame = recv_ws_frame(sock)
-                except socket.timeout:
-                    continue
                 except Exception:
                     break
+
+                if frame is _TIMEOUT_SENTINEL:
+                    # 超时：服务器只是没发数据，连接仍然正常
+                    continue
 
                 if frame is None:
                     print("[连接] 断开")

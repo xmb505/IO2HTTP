@@ -30,21 +30,14 @@
         "单个 bitmap 帧中多个 GPIO 同时变化会被一次性处理（支持多键同时按下）"
     ],
 
-    "ws_url": "ws://127.0.0.1:8081",
+    "ws_url": "ws://192.168.1.201:8081",
     "alias": "plc",
 
     "mapping": {
         "I0.0": "KEY_A",
-        "I0.1": "KEY_B",
-        "I0.2": "KEY_C",
-        "I0.3": "KEY_D",
-        "I0.4": "KEY_ENTER",
-        "I0.5": "KEY_SPACE",
-        "I0.6": "KEY_UP",
-        "I0.7": "KEY_DOWN",
-        "I1.0": "KEY_LEFT",
-        "I1.1": "KEY_RIGHT",
-        "I1.2": "KEY_ESC",
-        "I1.3": "KEY_TAB"
+        "I0.1": "KEY_F",
+        "I0.2": "KEY_G",
+        "I0.3": "KEY_J",
+        "I0.4": "KEY_K"
     }
 }
