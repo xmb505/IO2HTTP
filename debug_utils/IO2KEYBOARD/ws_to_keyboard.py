@@ -211,7 +211,7 @@ class KeyMapper:
 
     def _key_name(self, code):
         """keycode → 可读名称"""
-        for name, val in e.ecodes.items():
+        for name, val in ecodes.ecodes.items():
             if val == code:
                 return name
         return f"0x{code:X}"
@@ -227,10 +227,11 @@ class KeyMapper:
         处理 GPIO 变化列表。
 
         Args:
-            changes: [{"gpio": "I0.0", "bit": 1}, {"gpio": "I0.1", "bit": 0}, ...]
+            changes: [{"gpio": "I0.0", "bit": 1}, ...]   PLC
+                     或 [{"gpio": 1, "bit": 1}, ...]     USB2GPIO (整数)
         """
         for item in changes:
-            gpio = item['gpio']
+            gpio = str(item['gpio'])   # 统一为字符串，兼容 PLC "I0.0" 和 USB2GPIO 整数引脚号
             bit = item['bit']
 
             if gpio not in self.mapping:
@@ -315,6 +316,15 @@ def main():
         ws_port = args.port
         ws_path = '/'
 
+    # 目标设备别名（强制）
+    target_alias = config.get('alias', '')
+    if not target_alias:
+        print("[错误] 未配置 alias，请在 keymap.json 中指定要监听哪个设备")
+        print('  "alias": "plc"     # 监听 PLC 输入 (I0.0, I0.1...)')
+        print('  "alias": "geter"   # 监听 USB2GPIO 输入 (引脚 1, 2, 3...)')
+        sys.exit(1)
+    print(f"[配置] 监听设备别名: {target_alias}")
+
     # 创建键盘映射器
     mapper = KeyMapper(config.get('mapping', {}))
 
@@ -359,13 +369,18 @@ def main():
                 if msg.get('type') != 'gpio_change':
                     continue
 
-                # 遍历所有设备的变化
+                # 遍历设备变化，按 alias 过滤
                 for gpio_info in msg.get('gpios', []):
+                    alias = gpio_info.get('alias', '?')
+
+                    # 如果配置了 target_alias，只处理匹配设备
+                    if target_alias and alias != target_alias:
+                        continue
+
                     changes = gpio_info.get('change_gpio', [])
                     if not changes:
                         continue
 
-                    alias = gpio_info.get('alias', '?')
                     print(f"[事件] {alias}: {changes}")
                     mapper.handle(changes)
 
