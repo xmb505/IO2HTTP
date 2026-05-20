@@ -42,6 +42,9 @@ class GPIOControlDaemon:
         # GPIO状态跟踪
         self.current_gpio_states = {}
 
+        # S7 PLC 控制器别名（必须在 _init_controllers 之前初始化）
+        self._plc_alias = None
+
         # 初始化控制器
         self._init_controllers()
 
@@ -123,7 +126,8 @@ class GPIOControlDaemon:
             try:
                 controller = self._create_controller(
                     protocol, tty_path, baudrate,
-                    config=section_config if protocol == 's7' else None
+                    config=section_config if protocol == 's7' else None,
+                    alias=alias
                 )
                 self.controllers[alias] = controller
                 self.controller_configs[alias] = controller_config
@@ -134,7 +138,8 @@ class GPIOControlDaemon:
                     try:
                         controller = self._create_controller(
                             protocol, tty_path, baudrate, simulate=True,
-                            config=section_config if protocol == 's7' else None
+                            config=section_config if protocol == 's7' else None,
+                            alias=alias
                         )
                         self.controllers[alias] = controller
                         self.controller_configs[alias] = controller_config
@@ -145,7 +150,7 @@ class GPIOControlDaemon:
                     print(f"初始化控制器 {alias} 失败: {e}")
                     self.controller_configs[alias] = controller_config
 
-    def _create_controller(self, protocol, tty_path, baudrate, simulate=None, config=None):
+    def _create_controller(self, protocol, tty_path, baudrate, simulate=None, config=None, alias=None):
         """
         根据协议类型创建对应的控制器
 
@@ -155,6 +160,7 @@ class GPIOControlDaemon:
             baudrate: 波特率
             simulate: 是否模拟模式，None 表示使用 self.simulate
             config: 额外配置参数（S7 协议需要）
+            alias: 控制器别名（S7 协议用于回调）
         """
         if simulate is None:
             simulate = self.simulate
@@ -166,13 +172,19 @@ class GPIOControlDaemon:
             from .s7plc_controller import S7PLCController
             if config is None:
                 config = {}
-            return S7PLCController(
+            # 记录 PLC 别名用于回调
+            self._plc_alias = alias
+            controller = S7PLCController(
                 ip_address=config.get('ip_address', '127.0.0.1'),
                 port=config.getint('port', 102),
                 rack=config.getint('rack', 0),
                 slot=config.getint('slot', 1),
+                read_port=config.getint('read_port', 0),
                 simulate=simulate,
             )
+            # 设置 PLC 输入变化回调
+            controller.set_input_callback(self._on_plc_input_change)
+            return controller
         else:
             raise ValueError(f"不支持的通信协议: {protocol}")
 
@@ -269,6 +281,27 @@ class GPIOControlDaemon:
             'command': command
         }
         self.spi_queue.put(spi_task)
+
+    # ==================== PLC 输入监听 ====================
+
+    def _on_plc_input_change(self, changes):
+        """
+        PLC 输入状态变化回调（由 S7PLCController 调用）
+
+        Args:
+            changes: list [{gpio: "I0.0", bit: 1}, ...]
+        """
+        if not changes:
+            return
+
+        status_data = {
+            "gpios": [{
+                "alias": self._plc_alias,
+                "default_bit": 0,
+                "change_gpio": changes
+            }]
+        }
+        self.broadcast_gpio_status(status_data)
 
     # ==================== SPI队列处理 ====================
 
@@ -728,6 +761,11 @@ class GPIOControlDaemon:
         print("GPIO守护进程启动...")
 
         self.start_spi_worker()
+
+        # 启动 S7 PLC 输入监听
+        for alias, controller in self.controllers.items():
+            if hasattr(controller, 'start_input_listener'):
+                controller.start_input_listener()
 
         status_thread = threading.Thread(target=self.start_status_server, daemon=True)
         status_thread.start()

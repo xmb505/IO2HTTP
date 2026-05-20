@@ -98,32 +98,17 @@ ws_port = 8081
 
 ## WebSocket API
 
-连接地址：`ws://<host>:<ws_port>/`
+> 详细的事件驱动监听文档见 [WebSocket 事件监听](websocket.md)。
 
-当 GPIO 状态发生变化时，服务器主动推送：
-
-```json
-{
-  "type": "gpio_change",
-  "id": 123,
-  "timestamp": 1234567890.123,
-  "gpios": [
-    {
-      "alias": "geter",
-      "default_bit": 0,
-      "change_gpio": [
-        {"gpio": 1, "bit": 0}
-      ]
-    }
-  ]
-}
-```
+连接地址：`ws://<host>:<ws_port>/`，GPIO 状态变化时服务器主动推送 JSON 消息。
 
 ## 使用示例
 
 ### curl
 
 ```bash
+# === USB2GPIO ===
+
 # 设置单个 GPIO
 curl -X POST http://localhost:8080/gpio \
   -H "Content-Type: application/json" \
@@ -136,6 +121,23 @@ curl -X POST http://localhost:8080/gpio \
 
 # 查询状态
 curl http://localhost:8080/status
+
+# === S7 PLC ===
+
+# 写入 PLC 输出（拉起 Q0.0 继电器）
+curl -X POST http://localhost:8080/gpio \
+  -H "Content-Type: application/json" \
+  -d '{"alias": "plc", "mode": "seter", "gpio": "Q0.0", "value": 1}'
+
+# 读取 PLC 输入
+curl -X POST http://localhost:8080/gpio \
+  -H "Content-Type: application/json" \
+  -d '{"alias": "plc", "mode": "geter", "gpio": "I0.0"}'
+
+# 批量控制（同时操作 Q0.0 和 Q0.1）
+curl -X POST http://localhost:8080/gpio \
+  -H "Content-Type: application/json" \
+  -d '{"alias": "plc", "mode": "seter", "gpios": ["Q0.0", "Q0.1", "Q0.2"], "values": [1, 0, 1]}'
 ```
 
 ### Python
@@ -143,12 +145,14 @@ curl http://localhost:8080/status
 ```python
 import requests
 
-# 控制 GPIO
+# USB2GPIO
 requests.post('http://localhost:8080/gpio', json={
-    'alias': 'sender',
-    'mode': 'set',
-    'gpio': 1,
-    'value': 1
+    'alias': 'sender', 'mode': 'set', 'gpio': 1, 'value': 1
+})
+
+# S7 PLC
+requests.post('http://localhost:8080/gpio', json={
+    'alias': 'plc', 'mode': 'seter', 'gpio': 'Q0.0', 'value': 1
 })
 
 # 查询状态

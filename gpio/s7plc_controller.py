@@ -2,9 +2,11 @@
 """
 S7 PLC 控制器模块
 通过 snap7 库与西门子 S7 PLC 进行通信
+支持 PLC 主动上报输入状态（TCP 监听）
 """
 
 import re
+import socket
 import time
 import threading
 
@@ -25,12 +27,13 @@ IO_AREA_MAP = {
 class S7PLCController(GPIOControllerBase):
     """S7 PLC 控制器，通过 snap7 库与西门子 S7 PLC 通信"""
 
-    def __init__(self, ip_address, port=102, rack=0, slot=1, simulate=False, debug=False):
+    def __init__(self, ip_address, port=102, rack=0, slot=1, read_port=0, simulate=False, debug=False):
         config = {
             'ip_address': ip_address,
             'port': port,
             'rack': rack,
             'slot': slot,
+            'read_port': read_port,
         }
         super().__init__(config, simulate=simulate, debug=debug)
 
@@ -38,13 +41,116 @@ class S7PLCController(GPIOControllerBase):
         self.port = port
         self.rack = rack
         self.slot = slot
+        self.read_port = read_port
         self.client = None
         self._lock = threading.Lock()  # PLC 操作锁
+
+        # PLC 主动上报监听
+        self.read_socket = None
+        self.read_thread = None
+        self.plc_input_last = {}  # 上次输入状态 {addr: state}
+        self.input_callback = None  # 回调函数 (alias, changes)
+        self.input_lock = threading.Lock()
+        self._running = True  # 控制监听线程生命周期
 
         if not simulate:
             self.connect()
         else:
             print(f"S7 PLC 控制器运行在模拟模式，目标: {self.ip_address}")
+
+    def set_input_callback(self, callback):
+        """设置输入状态变化回调函数"""
+        self.input_callback = callback
+
+    def start_input_listener(self):
+        """启动 PLC 主动上报监听线程"""
+        if not self.read_port:
+            print("未配置 read_port，跳过 PLC 输入监听")
+            return
+
+        self.read_thread = threading.Thread(
+            target=self._listen_plc_input,
+            daemon=True,
+            name="PLC-Input-Listener"
+        )
+        self.read_thread.start()
+        print(f"PLC 输入监听已启动，监听端口 {self.read_port}")
+
+    def stop_input_listener(self):
+        """停止 PLC 输入监听"""
+        if self.read_socket:
+            try:
+                self.read_socket.close()
+            except:
+                pass
+
+    def _listen_plc_input(self):
+        """监听 PLC 主动上报的输入状态"""
+        try:
+            self.read_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.read_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.read_socket.bind(('0.0.0.0', self.read_port))
+            self.read_socket.listen(1)
+            print(f"PLC 输入监听 Socket 已绑定 0.0.0.0:{self.read_port}")
+
+            while True:
+                try:
+                    conn, addr = self.read_socket.accept()
+                    with conn:
+                        conn.settimeout(5.0)
+                        while True:
+                            data = conn.recv(4096)
+                            if not data:
+                                break
+
+                            if len(data) >= 100:
+                                changes = self._parse_input_bitmap(data[:100])
+                                if changes and self.input_callback:
+                                    self.input_callback(changes)
+
+                except socket.timeout:
+                    continue
+                except ConnectionResetError:
+                    continue
+                except Exception as e:
+                    if self._running:
+                        print(f"PLC 输入监听错误: {e}")
+                    break
+
+        except Exception as e:
+            print(f"PLC 输入监听启动失败: {e}")
+
+    def _parse_input_bitmap(self, data: bytes) -> list:
+        """
+        解析 100 字节输入位图（25 DWord = 800 位）
+
+        Returns:
+            list: 变化的输入列表 [{gpio: "I0.0", bit: 1}, ...]
+        """
+        changes = []
+        current_bits = {}
+
+        for byte_idx in range(min(100, len(data))):
+            byte_val = data[byte_idx]
+            if byte_val == 0:
+                # 全 0 字节：所有位均为 0
+                for bit in range(8):
+                    io_addr = f"I{byte_idx}.{bit}"
+                    current_bits[io_addr] = 0
+            else:
+                for bit in range(8):
+                    io_addr = f"I{byte_idx}.{bit}"
+                    state = 1 if (byte_val & (1 << bit)) else 0
+                    current_bits[io_addr] = state
+
+        with self.input_lock:
+            for io_addr, state in current_bits.items():
+                last = self.plc_input_last.get(io_addr)
+                if last is not None and last != state:
+                    changes.append({"gpio": io_addr, "bit": state})
+                self.plc_input_last[io_addr] = state
+
+        return changes
 
     @staticmethod
     def parse_io_address(io_str):
@@ -189,7 +295,9 @@ class S7PLCController(GPIOControllerBase):
         raise NotImplementedError("S7 PLC 暂不支持 SPI 模式")
 
     def close(self):
-        """断开 PLC 连接"""
+        """断开 PLC 连接并停止输入监听"""
+        self._running = False
+        self.stop_input_listener()
         if self.client:
             try:
                 self.client.disconnect()
