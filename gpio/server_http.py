@@ -14,8 +14,8 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
     daemon = None  # 将在初始化时设置
 
     def log_message(self, format, *args):
-        """自定义日志格式"""
-        print(f"[HTTP] {self.address_string()} - {format % args}")
+        """静默HTTP请求日志，仅在错误时输出"""
+        pass  # 隐藏所有HTTP请求日志
 
     def do_POST(self):
         """处理 POST 请求 - GPIO控制"""
