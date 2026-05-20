@@ -23,6 +23,8 @@ import signal
 import sys
 import string
 import random
+import threading
+import struct
 
 from evdev import UInput, ecodes
 
@@ -203,13 +205,20 @@ def _apply_mask(data, mask_key):
 # ============================================================
 
 class KeyMapper:
-    """GPIO → 键盘按键映射器，通过 /dev/uinput 注入事件"""
+    """GPIO → 键盘按键映射器，通过 /dev/uinput 注入事件
 
-    def __init__(self, mapping_config):
+    使用事件缓冲队列 + 滑动窗口 flush 机制，将 16ms 窗口内的
+    多个 GPIO 变化合并为一个输入报告（一次 SYN_REPORT），
+    确保多个按键被操作系统识别为"同时按下"（音游双押支持）。
+    """
+
+    def __init__(self, mapping_config, flush_interval=0.016):
         """
         Args:
             mapping_config: dict, {"I0.0": "KEY_A", "I0.1": "KEY_B", ...}
+            flush_interval: 合并窗口（秒），默认 0.016，音游建议 0.004
         """
+        self._flush_interval = flush_interval
         self.mapping = {}
         for gpio_name, key_name in mapping_config.items():
             keycode = getattr(ecodes, key_name, None)
@@ -220,6 +229,11 @@ class KeyMapper:
 
         # 按键当前状态，用于防抖（bit=1 表示按下中）
         self._key_pressed = {}
+
+        # 事件缓冲队列
+        self._pending_events = []
+        self._pending_lock = threading.Lock()
+        self._flush_timer = None
 
         # 创建虚拟输入设备
         self._ui = UInput()
@@ -242,6 +256,35 @@ class KeyMapper:
         for gpio, code in self.mapping.items():
             print(f"  {gpio:>6s}  →  {self._key_name(code)}")
 
+    def _schedule_flush(self):
+        """注意：调用者必须在 _pending_lock 内调用此方法"""
+        if self._flush_timer is not None:
+            self._flush_timer.cancel()
+        self._flush_timer = threading.Timer(self._flush_interval, self._flush)
+        self._flush_timer.daemon = True
+        self._flush_timer.start()
+
+    def _write_events_atomic(self, events):
+        """将多个事件 + SYN_REPORT 通过单次 write() syscall 写入 uinput，
+        确保 kernel 给所有事件打上相同时间戳（模拟物理键盘 HID 报告）。"""
+        if not events:
+            return
+        # struct input_event: llHHi (timeval + type + code + value) = 24 bytes
+        buf = b''
+        for ev_type, code, value in events:
+            buf += struct.pack('llHHi', 0, 0, ev_type, code, value)
+        # SYN_REPORT
+        buf += struct.pack('llHHi', 0, 0, 0, 0, 0)
+        os.write(self._ui.fd, buf)
+
+    def _flush(self):
+        """将缓冲队列中的所有事件一次性发送到 uinput"""
+        with self._pending_lock:
+            events = list(self._pending_events)
+            self._pending_events.clear()
+            self._flush_timer = None
+        self._write_events_atomic(events)
+
     def handle(self, changes):
         """
         处理 GPIO 变化列表。
@@ -250,35 +293,44 @@ class KeyMapper:
             changes: [{"gpio": "I0.0", "bit": 1}, ...]   PLC
                      或 [{"gpio": 1, "bit": 1}, ...]     USB2GPIO (整数)
         """
-        for item in changes:
-            gpio = str(item['gpio'])   # 统一为字符串，兼容 PLC "I0.0" 和 USB2GPIO 整数引脚号
-            bit = item['bit']
+        with self._pending_lock:
+            for item in changes:
+                gpio = str(item['gpio'])
+                bit = item['bit']
 
-            if gpio not in self.mapping:
-                continue
+                if gpio not in self.mapping:
+                    continue
 
-            keycode = self.mapping[gpio]
+                keycode = self.mapping[gpio]
 
-            # 防止重复按/放
-            if self._key_pressed.get(gpio) == bit:
-                continue
-            self._key_pressed[gpio] = bit
+                # 防止重复按/放
+                if self._key_pressed.get(gpio) == bit:
+                    continue
+                self._key_pressed[gpio] = bit
 
-            if bit == 1:
-                self._ui.write(ecodes.EV_KEY, keycode, 1)
-                self._ui.syn()
-                print(f"  ↓ {self._key_name(keycode)}  (GPIO {gpio})")
-            else:
-                self._ui.write(ecodes.EV_KEY, keycode, 0)
-                self._ui.syn()
-                print(f"  ↑ {self._key_name(keycode)}  (GPIO {gpio})")
+                if bit == 1:
+                    self._pending_events.append((ecodes.EV_KEY, keycode, 1))
+                    print(f"  ↓ {self._key_name(keycode)}  (GPIO {gpio})")
+                else:
+                    self._pending_events.append((ecodes.EV_KEY, keycode, 0))
+                    print(f"  ↑ {self._key_name(keycode)}  (GPIO {gpio})")
+
+            self._schedule_flush()
 
     def release_all(self):
         """释放所有当前按下的按键（用于优雅退出）"""
+        with self._pending_lock:
+            if self._flush_timer:
+                self._flush_timer.cancel()
+                self._flush_timer = None
+            self._pending_events.clear()
+
+        # 收集所有需要释放的按键
+        release_events = []
         for gpio, code in self.mapping.items():
             if self._key_pressed.get(gpio) == 1:
-                self._ui.write(ecodes.EV_KEY, code, 0)
-                self._ui.syn()
+                release_events.append((ecodes.EV_KEY, code, 0))
+        self._write_events_atomic(release_events)
         self._ui.close()
         print("[键盘] 已释放所有按键，设备关闭")
 
@@ -346,7 +398,10 @@ def main():
     print(f"[配置] 监听设备别名: {target_alias}")
 
     # 创建键盘映射器
-    mapper = KeyMapper(config.get('mapping', {}))
+    mapper = KeyMapper(
+        config.get('mapping', {}),
+        flush_interval=config.get('flush_interval', 0.016),
+    )
 
     # 信号处理
     running = True
