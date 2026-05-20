@@ -96,11 +96,12 @@ class S7PLCController(GPIOControllerBase):
             while True:
                 try:
                     conn, addr = self.read_socket.accept()
+                    print(f"PLC 输入连接已建立: {addr[0]}:{addr[1]}")
                     with conn:
-                        conn.settimeout(5.0)
                         while True:
                             data = conn.recv(4096)
                             if not data:
+                                print("PLC 输入连接已断开")
                                 break
 
                             if len(data) >= 100:
@@ -108,14 +109,13 @@ class S7PLCController(GPIOControllerBase):
                                 if changes and self.input_callback:
                                     self.input_callback(changes)
 
-                except socket.timeout:
-                    continue
                 except ConnectionResetError:
+                    print("PLC 连接被重置，等待重连")
                     continue
-                except Exception as e:
+                except OSError as e:
                     if self._running:
                         print(f"PLC 输入监听错误: {e}")
-                    break
+                    continue
 
         except Exception as e:
             print(f"PLC 输入监听启动失败: {e}")

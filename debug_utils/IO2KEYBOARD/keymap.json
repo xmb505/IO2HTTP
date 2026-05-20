@@ -1,0 +1,40 @@
+{
+    "_comment": [
+        "IO2KEYBOARD 按键映射配置",
+        "格式: \"GPIO地址\": \"按键名\"",
+        "",
+        "=== 常用按键名 ===",
+        "字母:   KEY_A ~ KEY_Z",
+        "数字:   KEY_0 ~ KEY_9",
+        "功能:   KEY_F1 ~ KEY_F12",
+        "导航:   KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT",
+        "修饰:   KEY_LEFTCTRL, KEY_RIGHTCTRL, KEY_LEFTSHIFT, KEY_RIGHTSHIFT, KEY_LEFTALT, KEY_RIGHTALT",
+        "特殊:   KEY_ENTER, KEY_SPACE, KEY_TAB, KEY_ESC, KEY_BACKSPACE, KEY_DELETE",
+        "        KEY_HOME, KEY_END, KEY_PAGEUP, KEY_PAGEDOWN, KEY_INSERT",
+        "        KEY_CAPSLOCK, KEY_NUMLOCK, KEY_SCROLLLOCK",
+        "媒体:   KEY_VOLUMEUP, KEY_VOLUMEDOWN, KEY_MUTE, KEY_PLAYPAUSE",
+        "        KEY_NEXTSONG, KEY_PREVIOUSSONG, KEY_STOPCD",
+        "小键盘: KEY_KP0 ~ KEY_KP9, KEY_KPENTER, KEY_KPPLUS, KEY_KPMINUS",
+        "",
+        "=== 触发规则 ===",
+        "bit=1 → 按下按键，bit=0 → 释放按键",
+        "单个 bitmap 帧中多个 GPIO 同时变化会被一次性处理（支持多键同时按下）"
+    ],
+
+    "ws_url": "ws://127.0.0.1:8081",
+
+    "mapping": {
+        "I0.0": "KEY_A",
+        "I0.1": "KEY_B",
+        "I0.2": "KEY_C",
+        "I0.3": "KEY_D",
+        "I0.4": "KEY_ENTER",
+        "I0.5": "KEY_SPACE",
+        "I0.6": "KEY_UP",
+        "I0.7": "KEY_DOWN",
+        "I1.0": "KEY_LEFT",
+        "I1.1": "KEY_RIGHT",
+        "I1.2": "KEY_ESC",
+        "I1.3": "KEY_TAB"
+    }
+}
