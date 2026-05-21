@@ -227,6 +227,9 @@ class KeyMapper:
                 continue
             self.mapping[gpio_name] = keycode
 
+        # keycode → gpio_name 反向映射（用于冲突检测）
+        self._code_to_gpio = {v: k for k, v in self.mapping.items()}
+
         # 按键当前状态，用于防抖（bit=1 表示按下中）
         self._key_pressed = {}
 
@@ -278,11 +281,56 @@ class KeyMapper:
         os.write(self._ui.fd, buf)
 
     def _flush(self):
-        """将缓冲队列中的所有事件一次性发送到 uinput"""
+        """将缓冲队列中的事件发送到 uinput
+
+        检测同批次内同一按键的 down+up 冲突：
+        如果某按键在同一批次内既有 KEY_DOWN 又有 KEY_UP，
+        只发送 KEY_DOWN，将 KEY_UP 推迟到下一批次。
+        （避免游戏因 net state=up 忽略本次 tap）
+        """
         with self._pending_lock:
             events = list(self._pending_events)
             self._pending_events.clear()
             self._flush_timer = None
+
+            down_codes = set()
+            up_codes = set()
+            for ev_type, code, value in events:
+                if value == 1:
+                    down_codes.add(code)
+                elif value == 0:
+                    up_codes.add(code)
+            conflict_codes = down_codes & up_codes
+
+            if conflict_codes:
+                keep = []
+                defer = []
+                for ev_type, code, value in events:
+                    if code in conflict_codes and value == 0:
+                        defer.append((ev_type, code, value))
+                        # 推迟 KEY_UP：回退 _key_pressed 为 1，假装仍在按下
+                        # 等延迟发送后再由下一次 PLC 扫描纠正状态
+                        gpio = self._code_to_gpio.get(code)
+                        if gpio:
+                            self._key_pressed[gpio] = 1
+                    else:
+                        keep.append((ev_type, code, value))
+                if defer:
+                    self._pending_events = defer
+                    self._flush_timer = threading.Timer(
+                        self._flush_interval, self._flush
+                    )
+                    self._flush_timer.daemon = True
+                    self._flush_timer.start()
+                events = keep
+
+            # 同步 _key_pressed：对即将写入的 KEY_UP 事件标记为已释放
+            for ev_type, code, value in events:
+                if value == 0:
+                    gpio = self._code_to_gpio.get(code)
+                    if gpio:
+                        self._key_pressed[gpio] = 0
+
         self._write_events_atomic(events)
 
     def handle(self, changes):
