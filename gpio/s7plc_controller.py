@@ -21,6 +21,7 @@ IO_AREA_MAP = {
     'Q': Area.PA,   # 输出过程映像
     'I': Area.PE,   # 输入过程映像
     'M': Area.MK,   # 存储器区
+    'DB': Area.DB,  # 数据块
 }
 
 
@@ -190,30 +191,43 @@ class S7PLCController(GPIOControllerBase):
     @staticmethod
     def parse_io_address(io_str):
         """
-        解析 PLC IO 地址，支持 Q0.0, I1.2, M10.5 等格式
+        解析 PLC IO 地址，支持 Q0.0, I1.2, M10.5, DB11.DBX2.0 等格式
 
         Args:
             io_str: IO 地址字符串
 
         Returns:
-            tuple: (area, byte, bit)
+            tuple: (area, byte, bit, db_number)
                 area: snap7 Area 枚举
                 byte: 字节地址 (int)
                 bit: 位地址 (int)
+                db_number: DB 号（非 DB 区域为 0）
         """
         io_str = io_str.strip().upper()
+
+        # DB 地址格式：DB{db_no}.DBX{byte}.{bit}
+        match = re.match(r'^DB(\d+)\.DBX(\d+)\.(\d+)$', io_str)
+        if match:
+            db_number = int(match.group(1))
+            byte = int(match.group(2))
+            bit = int(match.group(3))
+            return IO_AREA_MAP['DB'], byte, bit, db_number
+
+        # 标准地址格式：{area}{byte}.{bit}
         match = re.match(r'^([QIM])(\d+)\.(\d+)$', io_str)
         if not match:
-            raise ValueError(f"无效的 IO 地址格式: {io_str}，应为 Q0.0, I1.2, M10.0 等格式")
+            raise ValueError(
+                f"无效的 IO 地址格式: {io_str}，应为 Q0.0, I1.2, M10.0, DB11.DBX2.0 等格式"
+            )
 
         area_type = match.group(1)
         byte = int(match.group(2))
         bit = int(match.group(3))
 
         if area_type not in IO_AREA_MAP:
-            raise ValueError(f"不支持的区域类型: {area_type}，仅支持 Q, I, M")
+            raise ValueError(f"不支持的区域类型: {area_type}，仅支持 Q, I, M, DB")
 
-        return IO_AREA_MAP[area_type], byte, bit
+        return IO_AREA_MAP[area_type], byte, bit, 0
 
     def connect(self):
         """连接到 S7 PLC"""
@@ -244,17 +258,17 @@ class S7PLCController(GPIOControllerBase):
 
         Args:
             gpio_states: dict {io_address: state, ...}
-                io_address: 如 "Q0.0", "Q1.2"
+                io_address: 如 "Q0.0", "Q1.2", "DB11.DBX2.0"
                 state: 0 或 1
         """
         with self._lock:
-            # 按 area+byte 分组，合并同字节操作
-            byte_ops = {}  # (area, byte) -> {bit: state, ...}
+            # 按 area+db_number+byte 分组，合并同字节操作
+            byte_ops = {}  # (area, db_number, byte) -> {bit: state, ...}
             for io_addr, state in gpio_states.items():
                 io_addr = str(io_addr).strip()
                 state = int(state)
-                area, byte, bit = self.parse_io_address(io_addr)
-                key = (area, byte)
+                area, byte, bit, db_number = self.parse_io_address(io_addr)
+                key = (area, db_number, byte)
                 if key not in byte_ops:
                     byte_ops[key] = {}
                 byte_ops[key][bit] = state
@@ -270,25 +284,29 @@ class S7PLCController(GPIOControllerBase):
                 return
 
             # 对每个字节执行单次写入
-            for (area, byte), bit_states in byte_ops.items():
+            for (area, db_number, byte), bit_states in byte_ops.items():
                 try:
                     # 读取当前字节
-                    data = self.client.read_area(area, 0, byte, 1)
+                    data = self.client.read_area(area, db_number, byte, 1)
                     # 修改所有需要改变的位
                     for bit, state in bit_states.items():
                         set_bool(data, 0, bit, bool(state))
                     # 单次写入整个字节
-                    self.client.write_area(area, 0, byte, data)
+                    self.client.write_area(area, db_number, byte, data)
 
                     # 更新缓存
                     for bit, state in bit_states.items():
-                        addr = f"{'Q' if area == Area.PA else 'I' if area == Area.PE else 'M'}{byte}.{bit}"
+                        if area == Area.DB:
+                            addr = f"DB{db_number}.DBX{byte}.{bit}"
+                        else:
+                            area_prefix = 'Q' if area == Area.PA else 'I' if area == Area.PE else 'M'
+                            addr = f"{area_prefix}{byte}.{bit}"
                         self.current_gpio_states[addr] = state
                         self.gpio_states[addr] = state
 
                     if self.debug:
                         bits_str = ', '.join(f"bit{b}={s}" for b, s in bit_states.items())
-                        print(f"已写入字节 {byte}: {bits_str} (数据: {data[0]:08b})")
+                        print(f"已写入字节 {byte} (DB={db_number}): {bits_str} (数据: {data[0]:08b})")
 
                 except Exception as e:
                     print(f"写入 PLC 字节 {byte} 失败: {e}")
@@ -302,7 +320,7 @@ class S7PLCController(GPIOControllerBase):
         读取 PLC IO 状态
 
         Args:
-            gpio_pin: IO 地址，如 "Q0.0"
+            gpio_pin: IO 地址，如 "Q0.0", "DB11.DBX2.0"
 
         Returns:
             引脚状态值 (0/1)，失败返回 None
@@ -314,8 +332,8 @@ class S7PLCController(GPIOControllerBase):
 
         with self._lock:
             try:
-                area, byte, bit = self.parse_io_address(io_addr)
-                data = self.client.read_area(area, 0, byte, 1)
+                area, byte, bit, db_number = self.parse_io_address(io_addr)
+                data = self.client.read_area(area, db_number, byte, 1)
                 return int(get_bool(data, 0, bit))
             except Exception as e:
                 print(f"读取 PLC {io_addr} 失败: {e}")
