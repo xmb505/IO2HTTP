@@ -180,6 +180,7 @@ class GPIOControlDaemon:
                 rack=config.getint('rack', 0),
                 slot=config.getint('slot', 1),
                 read_port=config.getint('read_port', 0),
+                event_input_protocol=config.get('event_input_protocol', 'udp'),
                 simulate=simulate,
             )
             # 设置 PLC 输入变化回调

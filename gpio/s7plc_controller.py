@@ -2,7 +2,7 @@
 """
 S7 PLC 控制器模块
 通过 snap7 库与西门子 S7 PLC 进行通信
-支持 PLC 主动上报输入状态（TCP 监听）
+支持 PLC 主动上报输入状态（TCP / UDP 监听）
 """
 
 import re
@@ -27,13 +27,15 @@ IO_AREA_MAP = {
 class S7PLCController(GPIOControllerBase):
     """S7 PLC 控制器，通过 snap7 库与西门子 S7 PLC 通信"""
 
-    def __init__(self, ip_address, port=102, rack=0, slot=1, read_port=0, simulate=False, debug=False):
+    def __init__(self, ip_address, port=102, rack=0, slot=1, read_port=0,
+                 event_input_protocol='udp', simulate=False, debug=False):
         config = {
             'ip_address': ip_address,
             'port': port,
             'rack': rack,
             'slot': slot,
             'read_port': read_port,
+            'event_input_protocol': event_input_protocol,
         }
         super().__init__(config, simulate=simulate, debug=debug)
 
@@ -42,6 +44,7 @@ class S7PLCController(GPIOControllerBase):
         self.rack = rack
         self.slot = slot
         self.read_port = read_port
+        self.event_input_protocol = (event_input_protocol or 'udp').lower()
         self.client = None
         self._lock = threading.Lock()  # PLC 操作锁
 
@@ -68,13 +71,14 @@ class S7PLCController(GPIOControllerBase):
             print("未配置 read_port，跳过 PLC 输入监听")
             return
 
+        proto = self.event_input_protocol.upper()
         self.read_thread = threading.Thread(
             target=self._listen_plc_input,
             daemon=True,
-            name="PLC-Input-Listener"
+            name=f"PLC-Input-Listener-{proto}"
         )
         self.read_thread.start()
-        print(f"PLC 输入监听已启动，监听端口 {self.read_port}")
+        print(f"PLC 输入监听已启动，监听端口 {self.read_port}，协议 {proto}")
 
     def stop_input_listener(self):
         """停止 PLC 输入监听"""
@@ -85,13 +89,20 @@ class S7PLCController(GPIOControllerBase):
                 pass
 
     def _listen_plc_input(self):
-        """监听 PLC 主动上报的输入状态"""
+        """根据 event_input_protocol 选择 TCP 或 UDP 监听"""
+        if self.event_input_protocol == 'udp':
+            self._listen_udp()
+        else:
+            self._listen_tcp()
+
+    def _listen_tcp(self):
+        """TCP 模式：PLC 通过 TCP 连接推送 100 字节位图，有连接管理"""
         try:
             self.read_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.read_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.read_socket.bind(('0.0.0.0', self.read_port))
             self.read_socket.listen(1)
-            print(f"PLC 输入监听 Socket 已绑定 0.0.0.0:{self.read_port}")
+            print(f"PLC 输入监听 TCP Socket 已绑定 0.0.0.0:{self.read_port}")
 
             while True:
                 try:
@@ -114,11 +125,35 @@ class S7PLCController(GPIOControllerBase):
                     continue
                 except OSError as e:
                     if self._running:
-                        print(f"PLC 输入监听错误: {e}")
+                        print(f"PLC TCP 输入监听错误: {e}")
                     continue
 
         except Exception as e:
-            print(f"PLC 输入监听启动失败: {e}")
+            print(f"PLC TCP 输入监听启动失败: {e}")
+
+    def _listen_udp(self):
+        """UDP 模式：PLC 通过 TUSEND 发送 UDP 数据包，无连接无握手"""
+        try:
+            self.read_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.read_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.read_socket.settimeout(2)  # 超时以便检测 _running 状态
+            self.read_socket.bind(('0.0.0.0', self.read_port))
+            print(f"PLC 输入监听 UDP Socket 已绑定 0.0.0.0:{self.read_port}")
+
+            while self._running:
+                try:
+                    data, addr = self.read_socket.recvfrom(4096)
+                except socket.timeout:
+                    continue
+
+                if len(data) >= 100:
+                    changes = self._parse_input_bitmap(data[:100])
+                    if changes and self.input_callback:
+                        self.input_callback(changes)
+
+        except Exception as e:
+            if self._running:
+                print(f"PLC UDP 输入监听启动失败: {e}")
 
     def _parse_input_bitmap(self, data: bytes) -> list:
         """
