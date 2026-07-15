@@ -16,6 +16,9 @@ from snap7.util import set_bool, get_bool
 
 from .base_controller import GPIOControllerBase
 
+import random
+import struct
+
 # PLC IO 地址到 snap7 Area 的映射
 IO_AREA_MAP = {
     'Q': Area.PA,   # 输出过程映像
@@ -361,3 +364,148 @@ class S7PLCController(GPIOControllerBase):
                 print(f"已断开 PLC {self.ip_address} 连接")
             except Exception as e:
                 print(f"断开 PLC 连接失败: {e}")
+
+
+class S7WordReadController(GPIOControllerBase):
+    """S7 PLC WORD 读取控制器
+    
+    用于从西门子 S7 PLC 的 DB 块读取 16 位无符号整数 (WORD)，
+    适用于电梯重量等模拟量采集场景。
+    """
+
+    def __init__(self, ip_address, port=102, rack=0, slot=1,
+                 db_number=1, start_byte=0, simulate=False, debug=False):
+        config = {
+            'ip_address': ip_address,
+            'port': port,
+            'rack': rack,
+            'slot': slot,
+            'db_number': db_number,
+            'start_byte': start_byte,
+        }
+        super().__init__(config, simulate=simulate, debug=debug)
+
+        self.ip_address = ip_address
+        self.port = port
+        self.rack = rack
+        self.slot = slot
+        self.db_number = db_number
+        self.start_byte = start_byte
+        self.client = None
+
+        if not simulate:
+            self.connect()
+        else:
+            print(f"S7 WORD 读取控制器运行在模拟模式，目标: {self.ip_address}")
+
+    def connect(self):
+        """连接到 S7 PLC"""
+        try:
+            self.client = Client()
+            self.client.connect(self.ip_address, self.rack, self.slot, self.port)
+            if self.client.get_connected():
+                print(f"[WORD读取] 成功连接到 PLC: {self.ip_address}")
+            else:
+                raise ConnectionError(f"无法连接到 PLC: {self.ip_address}")
+        except Exception as e:
+            print(f"[WORD读取] 错误: 无法连接到 PLC {self.ip_address}: {e}")
+            raise
+
+    def reconnect(self):
+        """重新连接 PLC"""
+        if self.client:
+            try:
+                self.client.disconnect()
+            except:
+                pass
+        time.sleep(1)
+        self.connect()
+
+    def read_word(self, db_number=None, byte=None):
+        """
+        从 PLC DB 块读取一个 WORD（16 位无符号整数）
+
+        Args:
+            db_number: DB 块号，None 使用配置默认值
+            byte: 起始字节地址，None 使用配置默认值
+
+        Returns:
+            int: 0-65535 的无符号整数值，失败返回 None
+        """
+        if db_number is None:
+            db_number = self.db_number
+        if byte is None:
+            byte = self.start_byte
+
+        if self.simulate:
+            val = random.randint(0, 65535)
+            print(f"[WORD读取-模拟] DB{db_number}.DBW{byte} = {val}")
+            return val
+
+        try:
+            data = self.client.read_area(Area.DB, db_number, byte, 2)
+            if len(data) < 2:
+                print(f"[WORD读取] 读取 DB{db_number}.DBW{byte} 返回数据不足")
+                return None
+            value = struct.unpack('>H', data[:2])[0]
+            if self.debug:
+                print(f"[WORD读取] DB{db_number}.DBW{byte} = {value} (0x{value:04X})")
+            return value
+        except Exception as e:
+            print(f"[WORD读取] 读取 DB{db_number}.DBW{byte} 失败: {e}")
+            try:
+                self.reconnect()
+            except:
+                pass
+            return None
+
+    def read_words(self, db_number=None, start_byte=None, count=1):
+        """
+        批量读取多个 WORD
+
+        Args:
+            db_number: DB 块号
+            start_byte: 起始字节地址
+            count: 读取的 WORD 数量
+
+        Returns:
+            list: [{byte: addr, word: value, hex: "0xXXXX"}, ...]
+                  全部失败返回空列表
+        """
+        if db_number is None:
+            db_number = self.db_number
+        if start_byte is None:
+            start_byte = self.start_byte
+
+        results = []
+        for i in range(count):
+            byte_addr = start_byte + i * 2
+            val = self.read_word(db_number, byte_addr)
+            if val is not None:
+                results.append({
+                    "byte": byte_addr,
+                    "word": val,
+                    "hex": f"0x{val:04X}"
+                })
+        return results
+
+    def set_gpio(self, gpio_states):
+        """WORD 读取控制器不支持 GPIO 设置"""
+        raise NotImplementedError("S7 WORD 读取控制器不支持 GPIO 设置操作")
+
+    def read_gpio(self, gpio_pin):
+        """WORD 读取控制器不支持 GPIO 位读取"""
+        raise NotImplementedError("S7 WORD 读取控制器不支持 GPIO 位读取，请使用 read_word")
+
+    def set_spi(self, clk_pin, data_pin, cs_pin, data, cs_collection="down", lag_time=0.001, debug_spi=False):
+        """WORD 读取控制器不支持 SPI"""
+        raise NotImplementedError("S7 WORD 读取控制器不支持 SPI 操作")
+
+    def close(self):
+        """断开 PLC 连接"""
+        if self.client:
+            try:
+                self.client.disconnect()
+                print(f"[WORD读取] 已断开 PLC {self.ip_address} 连接")
+            except Exception as e:
+                print(f"[WORD读取] 断开 PLC 连接失败: {e}")

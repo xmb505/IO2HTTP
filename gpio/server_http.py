@@ -19,6 +19,10 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         """处理 POST 请求 - GPIO控制"""
+        if self.path == '/gpio/word_read':
+            self._handle_word_read_request()
+            return
+
         if self.path != '/gpio':
             self.send_error(404, "Not Found")
             return
@@ -138,3 +142,28 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
         }
         self.daemon.spi_queue.put(spi_task)
         return {'success': True, 'message': 'SPI multi command queued', 'alias': alias, 'mode': 'spi_multi'}
+
+    def _handle_word_read_request(self):
+        """处理 /gpio/word_read POST 请求"""
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+
+            try:
+                command = json.loads(body)
+            except json.JSONDecodeError:
+                self.send_error(400, "Invalid JSON")
+                return
+
+            if self.daemon is None:
+                response = {'success': False, 'error': 'Daemon not initialized'}
+            else:
+                response = self.daemon._handle_word_read_command(command)
+
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(response).encode('utf-8'))
+
+        except Exception as e:
+            self.send_error(500, str(e))

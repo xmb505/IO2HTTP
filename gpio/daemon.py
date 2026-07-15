@@ -88,8 +88,8 @@ class GPIOControlDaemon:
             # S7 协议是双工设备，无需 mode
             mode = self.config.get(section_name, 'mode', fallback=None)
 
-            # S7 协议不需要 tty_path，使用 IP 地址
-            if protocol == 's7':
+            # S7 及 S7_WORD 协议不需要 tty_path，使用 IP 地址
+            if protocol in ('s7', 's7_word'):
                 tty_path = None
                 baudrate = 115200
                 section_config = self.config[section_name]
@@ -126,7 +126,7 @@ class GPIOControlDaemon:
             try:
                 controller = self._create_controller(
                     protocol, tty_path, baudrate,
-                    config=section_config if protocol == 's7' else None,
+                    config=section_config if protocol in ('s7', 's7_word') else None,
                     alias=alias
                 )
                 self.controllers[alias] = controller
@@ -138,7 +138,7 @@ class GPIOControlDaemon:
                     try:
                         controller = self._create_controller(
                             protocol, tty_path, baudrate, simulate=True,
-                            config=section_config if protocol == 's7' else None,
+                            config=section_config if protocol in ('s7', 's7_word') else None,
                             alias=alias
                         )
                         self.controllers[alias] = controller
@@ -186,6 +186,19 @@ class GPIOControlDaemon:
             # 设置 PLC 输入变化回调
             controller.set_input_callback(self._on_plc_input_change)
             return controller
+        elif protocol == 's7_word':
+            from .s7plc_controller import S7WordReadController
+            if config is None:
+                config = {}
+            return S7WordReadController(
+                ip_address=config.get('ip_address', '127.0.0.1'),
+                port=config.getint('port', 102),
+                rack=config.getint('rack', 0),
+                slot=config.getint('slot', 1),
+                db_number=config.getint('db_number', 1),
+                start_byte=config.getint('start_byte', 0),
+                simulate=simulate,
+            )
         else:
             raise ValueError(f"不支持的通信协议: {protocol}")
 
@@ -282,6 +295,59 @@ class GPIOControlDaemon:
             'command': command
         }
         self.spi_queue.put(spi_task)
+
+    def _handle_word_read_command(self, command):
+        """
+        处理 WORD 读取命令（由 HTTP /gpio/word_read 调用）
+
+        Args:
+            command: dict，包含 alias、可选的 db_num/byte/count
+
+        Returns:
+            dict: 响应结果
+        """
+        alias = command.get('alias')
+        if not alias:
+            return {'success': False, 'error': '缺少 alias 参数'}
+
+        if alias not in self.controller_configs:
+            return {
+                'success': False, 'error': f'未找到别名为 {alias} 的控制器',
+                'available': list(self.controller_configs.keys())
+            }
+
+        if alias not in self.controllers:
+            return {'success': False, 'error': f'设备 {alias} 暂不可用'}
+
+        controller = self.controllers[alias]
+        protocol = self.controller_configs[alias].get('protocol', '')
+
+        if protocol != 's7_word':
+            return {'success': False, 'error': f'控制器 {alias} 不是 WORD 读取类型 (protocol={protocol})'}
+
+        if not hasattr(controller, 'read_words'):
+            return {'success': False, 'error': f'控制器 {alias} 不支持 WORD 读取'}
+
+        db_number = command.get('db_num')
+        byte = command.get('byte')
+        count = command.get('count', 1)
+
+        readings = controller.read_words(db_number=db_number, start_byte=byte, count=count)
+
+        if not readings:
+            return {
+                'success': False,
+                'alias': alias,
+                'error': '读取 WORD 失败，PLC 可能未连接'
+            }
+
+        config_db = controller.db_number if hasattr(controller, 'db_number') else None
+        return {
+            'success': True,
+            'alias': alias,
+            'db_number': db_number or config_db,
+            'readings': readings
+        }
 
     # ==================== PLC 输入监听 ====================
 

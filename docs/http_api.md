@@ -96,6 +96,64 @@ ws_port = 8081
 }
 ```
 
+### 4. PLC WORD 读取
+
+**POST** `/gpio/word_read`
+
+从西门子 S7 PLC 的 DB 块读取 16 位无符号整数 (WORD)，适用于电梯重量等模拟量采集场景。
+
+**配置**（`config.ini`）：
+```ini
+[Weight_Read]
+protocol = s7_word
+alias = weight
+ip_address = 192.168.1.8
+port = 102
+rack = 0
+slot = 1
+db_number = 1
+start_byte = 0
+```
+
+**请求体**：
+```json
+{
+  "alias": "weight",
+  "db_num": 10,
+  "byte": 28,
+  "count": 2
+}
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `alias` | string | 控制器别名，必填 |
+| `db_num` | int | DB 块号，可选，默认使用配置值 |
+| `byte` | int | 起始字节地址（DBW），可选，默认使用配置值 |
+| `count` | int | 读取 WORD 数量，可选，默认 1 |
+
+**响应**：
+```json
+{
+  "success": true,
+  "alias": "weight",
+  "db_number": 10,
+  "readings": [
+    {"byte": 28, "word": 114, "hex": "0x0072"},
+    {"byte": 30, "word": 514, "hex": "0x0202"}
+  ]
+}
+```
+
+**curl 示例**：
+```bash
+curl -X POST http://localhost:8080/gpio/word_read \
+  -H "Content-Type: application/json" \
+  -d '{"alias":"weight","db_num":10,"byte":28,"count":2}'
+```
+
+---
+
 ## WebSocket API
 
 > 详细的事件驱动监听文档见 [WebSocket 事件监听](websocket.md)。

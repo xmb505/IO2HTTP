@@ -53,6 +53,19 @@ class GPIOControllerBase:
         """
         raise NotImplementedError
 
+    def read_word(self, db_number=None, byte=None):
+        """
+        读取 WORD 值（16位无符号整数），子类可选实现
+
+        Args:
+            db_number: DB 块号
+            byte: 起始字节地址
+
+        Returns:
+            16 位无符号整数值，失败返回 None
+        """
+        raise NotImplementedError
+
     def set_spi(self, clk_pin, data_pin, cs_pin, data, cs_collection="down", lag_time=0.001, debug_spi=False):
         """
         SPI 通信（如果协议支持）
