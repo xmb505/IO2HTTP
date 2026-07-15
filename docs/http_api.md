@@ -98,7 +98,7 @@ ws_port = 8081
 
 ### 4. PLC WORD 读取
 
-**POST** `/gpio/word_read`
+**POST** `/word_read`
 
 从西门子 S7 PLC 的 DB 块读取 16 位无符号整数 (WORD)，适用于电梯重量等模拟量采集场景。
 
@@ -147,7 +147,7 @@ start_byte = 0
 
 **curl 示例**：
 ```bash
-curl -X POST http://localhost:8080/gpio/word_read \
+curl -X POST http://localhost:8080/word_read \
   -H "Content-Type: application/json" \
   -d '{"alias":"weight","db_num":10,"byte":28,"count":2}'
 ```

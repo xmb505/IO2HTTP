@@ -19,7 +19,7 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         """处理 POST 请求 - GPIO控制"""
-        if self.path == '/gpio/word_read':
+        if self.path == '/word_read':
             self._handle_word_read_request()
             return
 
@@ -144,7 +144,7 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
         return {'success': True, 'message': 'SPI multi command queued', 'alias': alias, 'mode': 'spi_multi'}
 
     def _handle_word_read_request(self):
-        """处理 /gpio/word_read POST 请求"""
+        """处理 /word_read POST 请求"""
         try:
             content_length = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(content_length).decode('utf-8')
