@@ -117,9 +117,9 @@ class S7PLCController(GPIOControllerBase):
                                 break
 
                             if len(data) >= 100:
-                                changes = self._parse_input_bitmap(data[:100])
-                                if changes and self.input_callback:
-                                    self.input_callback(changes)
+                                changes, bitmap_hex = self._parse_input_bitmap(data[:100])
+                                if self.input_callback:
+                                    self.input_callback(changes, bitmap_hex)
 
                 except ConnectionResetError:
                     print("PLC 连接被重置，等待重连")
@@ -148,20 +148,23 @@ class S7PLCController(GPIOControllerBase):
                     continue
 
                 if len(data) >= 100:
-                    changes = self._parse_input_bitmap(data[:100])
-                    if changes and self.input_callback:
-                        self.input_callback(changes)
+                    changes, bitmap_hex = self._parse_input_bitmap(data[:100])
+                    if self.input_callback:
+                        self.input_callback(changes, bitmap_hex)
 
         except Exception as e:
             if self._running:
                 print(f"PLC UDP 输入监听启动失败: {e}")
 
-    def _parse_input_bitmap(self, data: bytes) -> list:
+    def _parse_input_bitmap(self, data: bytes) -> tuple:
         """
         解析 100 字节输入位图（25 DWord = 800 位）
 
         Returns:
-            list: 变化的输入列表 [{gpio: "I0.0", bit: 1}, ...]
+            tuple: (changes, bitmap_hex)
+                changes: 变化的输入列表 [{gpio: "I0.0", bit: 1}, ...]
+                bitmap_hex: 当前完整位图，小写 hex 字符串，100 字节 → 200 字符
+                    字节 N 第 K 位对应 I{N}.{K}
         """
         changes = []
         current_bits = {}
@@ -186,7 +189,8 @@ class S7PLCController(GPIOControllerBase):
                     changes.append({"gpio": io_addr, "bit": state})
                 self.plc_input_last[io_addr] = state
 
-        return changes
+        bitmap_hex = data[:100].hex()
+        return changes, bitmap_hex
 
     @staticmethod
     def parse_io_address(io_str):

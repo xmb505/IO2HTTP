@@ -80,6 +80,7 @@ ws = websocket.create_connection('ws://localhost:8081')
     {
       "alias": "plc",
       "default_bit": 0,
+      "bitmap": "0300...",
       "change_gpio": [
         {"gpio": "I0.0", "bit": 1},
         {"gpio": "I0.1", "bit": 0},
@@ -89,6 +90,8 @@ ws = websocket.create_connection('ws://localhost:8081')
   ]
 }
 ```
+
+> `bitmap` 是 PLC 主动上报当前帧的完整输入位图（小写 hex，100 字节 → 200 字符），字节 N 第 K 位对应 `I{N}.{K}`，可用于上层应用直接重建全局 IO 表。USB2GPIO 设备无此字段。
 
 #### 混合推送（多个设备同时变化）
 
@@ -127,6 +130,7 @@ ws = websocket.create_connection('ws://localhost:8081')
 | `gpios` | array | 变化的设备列表 |
 | `gpios[].alias` | string | 设备别名（如 `geter`, `plc`） |
 | `gpios[].default_bit` | int | 查询电平指令集（USB2GPIO 专用） |
+| `gpios[].bitmap` | string | 当前完整输入位图（小写 hex，100 字节 → 200 字符），仅 PLC 主动上报携带，字节 N 第 K 位对应 `I{N}.{K}`，可选 |
 | `gpios[].change_gpio` | array | 变化的引脚列表 |
 | `change_gpio[].gpio` | int/string | 引脚编号（USB2GPIO: 数字，PLC: `"I0.0"`） |
 | `change_gpio[].bit` | int | 当前状态：0 或 1 |

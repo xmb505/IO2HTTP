@@ -285,20 +285,19 @@ class GPIOControlDaemon:
 
     # ==================== PLC 输入监听 ====================
 
-    def _on_plc_input_change(self, changes):
+    def _on_plc_input_change(self, changes, bitmap_hex):
         """
         PLC 输入状态变化回调（由 S7PLCController 调用）
 
         Args:
             changes: list [{gpio: "I0.0", bit: 1}, ...]
+            bitmap_hex: 当前完整输入位图，小写 hex 字符串（100 字节 → 200 字符）
         """
-        if not changes:
-            return
-
         status_data = {
             "gpios": [{
                 "alias": self._plc_alias,
                 "default_bit": 0,
+                "bitmap": bitmap_hex,
                 "change_gpio": changes
             }]
         }
@@ -603,11 +602,17 @@ class GPIOControlDaemon:
 
             combined_status_data = {"gpios": []}
             for alias, changes in self.gpio_change_buffer.items():
+                latest_bitmap = next(
+                    (c['bitmap'] for c in reversed(changes) if c.get('bitmap')),
+                    None
+                )
                 combined_changes = {
                     "alias": alias,
                     "default_bit": changes[0].get('default_bit', 0),
                     "change_gpio": []
                 }
+                if latest_bitmap is not None:
+                    combined_changes["bitmap"] = latest_bitmap
                 for change in changes:
                     combined_changes["change_gpio"].extend(change.get('change_gpio', []))
                 combined_status_data["gpios"].append(combined_changes)

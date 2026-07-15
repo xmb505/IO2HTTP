@@ -74,6 +74,29 @@
     ]
 }
 
+## PLC主动上报携带 bitmap 字段
+
+当 `alias` 为 PLC 设备时，每个变化消息会附带 `bitmap` 字段（小写 hex 字符串，100 字节 → 200 字符），即 PLC 当前帧的完整输入位图，字节 N 第 K 位对应 `I{N}.{K}`，上层应用可直接用它重建全局 IO 表。USB2GPIO 设备不携带此字段。
+
+{
+    "type": "gpio_change",
+    "id": 3,
+    "timestamp": 1234567890.123456,
+    "gpios": [
+        {
+            "alias": "plc",
+            "default_bit": 0,
+            "bitmap": "04000000...",
+            "change_gpio": [
+                {
+                    "gpio": "I0.2",
+                    "bit": 1
+                }
+            ]
+        }
+    ]
+}
+
 ## 查询电平指令集说明
 - default_bit: 1 - 使用3D指令集（拉高GPIO后检测）：系统将所有GPIO拉高，然后检测哪些GPIO被外部信号拉低
 - default_bit: 0 - 使用3E指令集（拉低GPIO后检测）：系统将所有GPIO拉低，然后检测哪些GPIO被外部信号拉高
